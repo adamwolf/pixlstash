@@ -77,6 +77,16 @@ class ClipService:
             CLIP_MODEL_NAME, pretrained=CLIP_MODEL_WEIGHTS
         )
         model = model.to(self._device)
+        # fp16 on CUDA only, and deliberately not on Metal, where the built-in
+        # tagger does promote. The difference is what the output is for: the
+        # tagger's logits are thresholded into tags (identical either way),
+        # while these embeddings are stored and searched.
+        # Measured on an M1 Pro, batch of 16: fp32 103 ms and fp16 93 ms, so
+        # promoting buys ~10% - and moves agreement with the CPU-written
+        # vectors already in the library from 1e-06 to 5e-04. Cheap speed,
+        # for a change to the contents of a column nothing re-generates.
+        # If that trade is ever worth taking, both this and the tensor cast
+        # below must move together or the forward pass fails on a dtype mismatch.
         if self._device == "cuda":
             model = model.half()
         self._model = model
