@@ -772,6 +772,11 @@ class TaskRunner:
                 # promptly.  CPU-queue tasks only flush when they held a VRAM
                 # reservation.
                 if task.queue_type == QueueType.GPU:
+                    # Collect Python objects freed during inference (e.g. preloaded
+                    # image dicts) before the flush: a tensor held in a reference
+                    # cycle is only freed by the collection, and a flush ahead of
+                    # it hands none of its memory back.
+                    gc.collect()
                     try:
                         if empty_cuda_cache():
                             with TaskRunner._vram_cache_lock:
@@ -783,10 +788,8 @@ class TaskRunner:
                             task.type,
                             traceback.format_exc(),
                         )
-                    # Collect Python objects freed during inference (e.g. preloaded
-                    # image dicts) and trim glibc's malloc arena so that resident
-                    # set size drops back towards the true working set.
-                    gc.collect()
+                    # Trim glibc's malloc arena so that resident set size drops
+                    # back towards the true working set.
                     if platform.system().lower().startswith("linux"):
                         try:
                             trim = getattr(
