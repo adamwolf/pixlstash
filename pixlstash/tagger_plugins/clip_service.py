@@ -12,6 +12,9 @@ from typing import Optional
 
 import numpy as np
 
+from pixlstash.utils.device_utils import empty_device_cache
+from pixlstash.utils.vram_utils import is_device_error
+
 # ML imports (torch / open_clip, which itself pulls torch, torchvision and
 # transformers) are deliberately FUNCTION-LOCAL throughout
 # this module. They cost seconds to import, and this module sits on the API
@@ -27,10 +30,10 @@ CLIP_MODEL_WEIGHTS = "laion2b_s34b_b79k"
 class ClipService:
     """Manages the OpenCLIP model for text and image embeddings.
 
-    Lazy-loads on first use and falls back to CPU on CUDA errors.
+    Lazy-loads on first use and falls back to CPU when the accelerator fails.
 
     Args:
-        device: Initial inference device (``"cuda"`` or ``"cpu"``).
+        device: Initial inference device (``"cuda"``, ``"mps"`` or ``"cpu"``).
     """
 
     def __init__(self, device: str) -> None:
@@ -82,7 +85,7 @@ class ClipService:
 
     @property
     def device(self) -> str:
-        """Current inference device (``"cuda"`` or ``"cpu"``)."""
+        """Current inference device (``"cuda"``, ``"mps"`` or ``"cpu"``)."""
         return self._device
 
     @property
@@ -122,7 +125,7 @@ class ClipService:
 
         Preprocesses the images (unless *tensors* carries that work already
         done), runs a single batched forward pass, and returns row-normalised
-        float32 embeddings.  Falls back to CPU on CUDA OOM.
+        float32 embeddings.  Falls back to CPU when the accelerator fails.
 
         Args:
             images: List of ``PIL.Image`` objects.
@@ -147,19 +150,23 @@ class ClipService:
                 features = self._model.encode_image(tensors)
                 features = features / features.norm(dim=-1, keepdim=True)
             return features.cpu().float().numpy()
-        except RuntimeError as exc:
-            if any(
-                kw in str(exc)
-                for kw in ("CUDA out of memory", "not compatible", "CUDA error")
-            ):
+        # Not just RuntimeError: Metal raises its dtype refusal as a
+        # TypeError (c10::TypeError from TORCH_CHECK_TYPE), so the one
+        # of the four Metal failures is_device_error names that is not a
+        # RuntimeError would otherwise sail past this handler. The
+        # predicate, not the exception class, decides what is a device
+        # failure; anything else is logged below and the batch returns None.
+        except Exception as exc:
+            if is_device_error(exc, self._device):
+                failed_device = self._device
                 logger.warning(
-                    "ClipService.encode_image_batch: CUDA error, retrying on CPU: %s",
+                    "ClipService.encode_image_batch: %s failure, retrying on CPU: %s",
+                    failed_device,
                     exc,
                 )
                 self._model = self._model.float().to("cpu")
                 self._device = "cpu"
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                empty_device_cache(failed_device)
                 try:
                     tensors = torch.stack([self._preprocess(img) for img in images]).to(
                         "cpu"
@@ -174,10 +181,9 @@ class ClipService:
                         cpu_exc,
                     )
                     return None
-            logger.error("ClipService.encode_image_batch: RuntimeError: %s", exc)
-            return None
-        except Exception as exc:
-            logger.error("ClipService.encode_image_batch: %s", exc)
+            logger.error(
+                "ClipService.encode_image_batch: %s: %s", type(exc).__name__, exc
+            )
             return None
 
     def encode_text(self, query: str) -> Optional[np.ndarray]:
@@ -209,7 +215,8 @@ class ClipService:
     ) -> list[Optional[np.ndarray]]:
         """Encode a list of PIL image crops into CLIP visual embeddings.
 
-        Handles CUDA OOM by falling back to CPU for the remainder of the batch.
+        Handles an accelerator failure by falling back to CPU for the
+        remainder of the batch.
 
         Args:
             crops: List of PIL.Image objects (or ``None`` for failed crops).
@@ -233,22 +240,25 @@ class ClipService:
                 with torch.no_grad():
                     features = self._model.encode_image(img_input).cpu().numpy()[0]
                 results.append(features)
-            except RuntimeError as exc:
-                if any(
-                    kw in str(exc)
-                    for kw in ("CUDA out of memory", "not compatible", "CUDA error")
-                ):
+            # Not just RuntimeError: Metal raises its dtype refusal as a
+            # TypeError (c10::TypeError from TORCH_CHECK_TYPE), so the one
+            # of the four Metal failures is_device_error names that is not a
+            # RuntimeError would otherwise sail past this handler. The
+            # predicate, not the exception class, decides what is a device
+            # failure; anything else is logged below and this crop gets None.
+            except Exception as exc:
+                if is_device_error(exc, self._device):
+                    failed_device = self._device
                     logger.warning(
-                        "ClipService CUDA error for '%s' index %d; retrying on CPU: %s",
+                        "ClipService %s failure for '%s' index %d; retrying on CPU: %s",
+                        failed_device,
                         pic_desc,
                         i,
                         exc,
                     )
-                    self._device = "cuda"  # will be overridden below
                     self._model = self._model.float().to("cpu")
                     self._device = "cpu"
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    empty_device_cache(failed_device)
                     try:
                         img_input = self._preprocess(crop).unsqueeze(0).to("cpu")
                         with torch.no_grad():
@@ -266,15 +276,11 @@ class ClipService:
                         results.append(None)
                 else:
                     logger.error(
-                        "ClipService RuntimeError for '%s' index %d: %s",
+                        "ClipService %s for '%s' index %d: %s",
+                        type(exc).__name__,
                         pic_desc,
                         i,
                         exc,
                     )
                     results.append(None)
-            except Exception as exc:
-                logger.error(
-                    "ClipService exception for '%s' index %d: %s", pic_desc, i, exc
-                )
-                results.append(None)
         return results
