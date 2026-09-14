@@ -6,6 +6,7 @@ import gc
 import threading
 
 from pixlstash.pixl_logging import get_logger
+from pixlstash.utils.device_utils import ensure_metal_thread
 from pixlstash.utils.model_utils import trim_process_memory
 from pixlstash.utils.vram_utils import empty_cuda_cache
 
@@ -86,7 +87,13 @@ class ModelLifecycleManager:
             sbert_service: Optional :class:`SBertService` to unload.
             pixlstash_tagger_service: Optional :class:`PixlStashTaggerService` to unload.
             florence_service: Optional :class:`Florence2Service` to unload.
+
+        Raises:
+            RuntimeError: On Apple Metal, called from a thread other than the
+                task runner's GPU worker (``ensure_metal_thread``), before
+                anything is unloaded.
         """
+        ensure_metal_thread(self._device)
         logger.warning("ModelLifecycleManager.aggressive_unload() called.")
         try:
             if clip_service is not None:
@@ -129,7 +136,13 @@ class ModelLifecycleManager:
             wd14_service: Optional :class:`WD14Service` to unload.
             sbert_service: Optional :class:`SBertService` to unload.
             pixlstash_tagger_service: Optional :class:`PixlStashTaggerService` to unload.
+
+        Raises:
+            RuntimeError: On Apple Metal, called from a thread other than the
+                task runner's GPU worker (``ensure_metal_thread``), before
+                anything is unloaded.
         """
+        ensure_metal_thread(self._device)
         logger.warning(
             "ModelLifecycleManager.safe_idle_unload() called, releasing non-captioning models."
         )
