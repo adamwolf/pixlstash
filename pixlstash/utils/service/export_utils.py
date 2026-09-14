@@ -14,6 +14,7 @@ from PIL import Image, PngImagePlugin
 
 from pixlstash.db_models.picture import Picture, PictureSet
 from pixlstash.db_models.picture_set import PictureSetMember
+from pixlstash.inference.cpu_query_encoders import CpuQueryEncodersNotReadyError
 from pixlstash.utils.host_open import open_in_file_manager
 from pixlstash.utils.image_processing.image_utils import ImageUtils
 from pixlstash.utils.image_processing.video_utils import VideoUtils
@@ -911,6 +912,20 @@ class ExportUtils:
             export_tasks[task_id]["status"] = "completed"
             export_tasks[task_id]["file_path"] = zip_path
             export_tasks[task_id]["private_dir"] = temp_export_dir
+        except CpuQueryEncodersNotReadyError as exc:
+            # The start route refuses an export by query while the query
+            # encoders are not ready, but they can stop being ready before this
+            # runs (a full restore cancels their load). A warning: the export
+            # itself did nothing wrong.
+            export_tasks[task_id]["status"] = "failed"
+            if temp_export_dir is not None:
+                shutil.rmtree(temp_export_dir, ignore_errors=True)
+            logger.warning(
+                "Export task %s cannot encode its search query yet (query=%r): %s",
+                task_id,
+                background_data.get("query"),
+                exc,
+            )
         except Exception as exc:
             export_tasks[task_id]["status"] = "failed"
             if temp_export_dir is not None:
@@ -999,6 +1014,15 @@ class ExportUtils:
 
             export_tasks[task_id]["status"] = "completed"
             export_tasks[task_id]["opened"] = opened
+        except CpuQueryEncodersNotReadyError as exc:
+            # See generate_zip: the start route checked, but that can change.
+            export_tasks[task_id]["status"] = "failed"
+            logger.warning(
+                "Export task %s cannot encode its search query yet (query=%r): %s",
+                task_id,
+                background_data.get("query"),
+                exc,
+            )
         except Exception as exc:
             export_tasks[task_id]["status"] = "failed"
             logger.error(f"Export task {task_id} failed: {exc}")
