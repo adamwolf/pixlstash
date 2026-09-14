@@ -341,6 +341,11 @@ def register_routes(router, server):
         if candidate_ids is not None and not candidate_ids:
             return []
 
+        # Encoded on the request thread, not inside the database task, so the
+        # model calls never hold the DB writer thread.
+        query_embedding = server.vault.generate_text_embedding(query)
+        clip_query_embedding = server.vault.generate_clip_text_embedding(query)
+
         def find_by_text(session, query, offset, limit):
             words = re.findall(r"\b\w+\b", query.lower())
             semantic_offset = 0 if sort_mech else offset
@@ -386,8 +391,8 @@ def register_routes(router, server):
                 session,
                 query,
                 words,
-                text_to_embedding=server.vault.generate_text_embedding,
-                clip_text_to_embedding=server.vault.generate_clip_text_embedding,
+                query_embedding=query_embedding,
+                clip_query_embedding=clip_query_embedding,
                 offset=semantic_offset,
                 limit=semantic_limit,
                 threshold=threshold,
