@@ -14,13 +14,18 @@ from pixlstash.utils.image_processing.video_utils import VideoUtils
 
 logger = get_logger(__name__)
 
+# Every image extension import accepts must be here too: the library-root scan
+# hard-deletes a picture row whose file this set does not match.
 SUPPORTED_IMAGE_EXTS: frozenset[str] = frozenset(
     {
         ".jpg",
         ".jpeg",
         ".png",
         ".webp",
+        ".gif",
         ".bmp",
+        ".tiff",
+        ".tif",
         ".heic",
         ".heif",
         ".avif",
